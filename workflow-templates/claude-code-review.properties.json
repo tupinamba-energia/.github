@@ -1,0 +1,6 @@
+{
+  "name": "Claude Code Review",
+  "description": "Automated PR code review using Claude AI with tupi-ai engineering agents. Requires .claude/settings.json to install the plugin.",
+  "iconName": "octicon code-review",
+  "categories": ["Automation", "Code quality"]
+}
