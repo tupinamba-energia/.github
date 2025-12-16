@@ -1,0 +1,6 @@
+{
+  "name": "Claude Bot",
+  "description": "Talk with Claude AI and tupi-ai engineering agents. Requires `@claude` invocation.",
+  "iconName": "octicon code-review",
+  "categories": ["Automation", "Code quality"]
+}
