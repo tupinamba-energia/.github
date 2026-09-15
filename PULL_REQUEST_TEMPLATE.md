@@ -21,9 +21,11 @@
 
 ## Deployment notes
 
-<!-- What the release needs beyond shipping the image: ordering between services,
-     migration, backfill, manual script, feature flag, or a rollback that is not
-     solved by reverting to the previous image. None? write "none". -->
+<!-- Only what can break the PRODUCTION deploy of this release: migration, backfill,
+     manual script, ordering between services, feature flag, or a rollback that is
+     not solved by reverting to the previous image.
+     Merge order, review order and version bumps are NOT deployment notes.
+     Nothing? write "none" — that is the common case. -->
 
 1.
 2.
