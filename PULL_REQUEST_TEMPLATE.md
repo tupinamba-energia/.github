@@ -1,11 +1,31 @@
 ## Description
-<!-- Please include a summary of your changes and the issue you’re addressing (if applicable). -->
 
-## Related Project or Issue and who requested
-<!-- Include to which project or issue this PR is related to, please link to the slack project channel or any related Thread. Also comment who specifically requested (if applicable), the full name of the person who requested. -->
+<!-- 1 to 3 sentences on what this PR does and the technical and/or business motivation -->
 
-## How Has This Been Tested?
-<!-- Describe the tests you ran to verify your changes. Provide instructions so we can reproduce the testing process. -->
+- **Task:** <!-- Paste the Asana task link here -->
 
-## Additional Notes
-<!-- Add any additional information or context here. -->
+## AI Attribution & Risk
+
+- **AI usage:**
+  - [ ] 100% human
+  - [ ] Co-piloted
+  - [ ] 100% AI
+- **Critical areas:** <!-- Anything sensitive, a complex business rule, or hallucination risk? -->
+
+## Testing
+
+<!-- Step-by-step instructions for reviewers to verify this works -->
+
+1.
+2.
+
+## Deployment notes
+
+<!-- Only what can break the PRODUCTION deploy of this release: migration, backfill,
+     manual script, ordering between services, feature flag, or a rollback that is
+     not solved by reverting to the previous image.
+     Merge order, review order and version bumps are NOT deployment notes.
+     Nothing? write "none" — that is the common case. -->
+
+1.
+2.
