@@ -1,0 +1,34 @@
+# Sincroniza o PR com o card do Asana no board Scrumban · Engenharia.
+#
+# Toda a logica e os GIDs do board moram no workflow reutilizavel em
+# tupinamba-energia/.github. Se o board mudar, muda la, nao aqui.
+#
+# O que ele faz:
+#   - PR nasce em draft e so sai de draft com reviewer (check `asana / asana-gate`)
+#   - card vai pra Review / PR quando o PR fica ready, com subtask por reviewer
+#   - card vai pra DEV QA quando o ultimo PR da task e mergeado
+#
+# Requer os secrets ASANA_PAT e ASANA_USER_MAP.
+name: Asana sync
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - converted_to_draft
+      - synchronize
+      - edited
+      - review_requested
+      - review_request_removed
+      - closed
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  asana:
+    uses: tupinamba-energia/.github/.github/workflows/asana-pr-sync.yml@master
+    secrets:
+      ASANA_PAT: ${{ secrets.ASANA_PAT }}
+      ASANA_USER_MAP: ${{ secrets.ASANA_USER_MAP }}

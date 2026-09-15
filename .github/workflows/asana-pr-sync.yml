@@ -1,0 +1,280 @@
+### Vai em: tupinamba-energia/.github  ->  .github/workflows/asana-pr-sync.yml
+###
+### Workflow reutilizavel, chamado por cada repo (ver asana-sync.caller.yml).
+### Alvo: board "Scrumban · Engenharia" (Time Sustentação), projeto 1217376162375967.
+###
+### As tasks desse board sao multi-projeto (vivem tambem no projeto de entrega).
+### Por isso todo movimento usa POST /sections/<gid>/addTask, que mexe so na
+### membership deste board e nao encosta na do outro projeto. Se a task nao
+### estiver no board, a automacao avisa e NAO move, pra nao adicionar task torta.
+###
+### Card em "Blocked" nunca e movido pela automacao: ela comenta na task dizendo
+### qual seria o destino e deixa a decisao com quem bloqueou.
+###
+### Os campos Start/Finish Cycle Time e Lead Time sao preenchidos por Asana Rules
+### do proprio board. Os movimentos de secao feitos aqui disparam essas rules, que
+### e o comportamento desejado. Este workflow NAO escreve nesses campos.
+###
+### Fluxo:
+###   opened            -> forca draft; exige URL da task; puxa Backlog/Ready to Dev -> WIP
+###   ready_for_review  -> sem reviewer volta pra draft; com reviewer -> Review / PR
+###                        + preenche campo Reviewer + subtask por reviewer
+###   review_requested  -> idem, para reviewer adicionado depois
+###   converted_to_draft-> volta pra WIP
+###   review submitted  -> comenta o review na task
+###   closed            -> completa subtasks do PR; mergeado e sem outro PR aberto -> DEV QA;
+###                        fechado sem merge -> WIP
+name: Asana PR sync (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # GIDs do board Scrumban · Engenharia, lidos da API do Asana em 15/09/2026.
+      # Nao sao segredo: sem token nao abrem nada. Ficam como default pra manter
+      # o caller de cada repo com zero configuracao.
+      project-gid:
+        type: string
+        default: '1217376162375967'
+      section-backlog:
+        type: string
+        default: '1217376222874595'
+      section-ready-to-dev:
+        type: string
+        default: '1217376290647813'
+      section-blocked:
+        description: Card nesta secao nunca e movido pela automacao.
+        type: string
+        default: '1218243486385567'
+      section-wip:
+        type: string
+        default: '1217376162775732'
+      section-review:
+        type: string
+        default: '1217376426122970'
+      section-dev-qa:
+        type: string
+        default: '1218243694879850'
+      reviewer-field-gid:
+        description: Campo people "Reviewer" do board. Vazio desliga o preenchimento.
+        type: string
+        default: '1218477375429471'
+    secrets:
+      ASANA_PAT:
+        required: true
+      ASANA_USER_MAP:
+        description: 'JSON {"github-login": "asana-user-gid"}'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate. E este job que vira required status check no ruleset da branch.
+  # ---------------------------------------------------------------------------
+  gate:
+    name: asana-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const action = context.payload.action;
+
+            const toDraft = async (motivo) => {
+              await github.graphql(
+                'mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { clientMutationId } }',
+                { id: pr.node_id },
+              );
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: pr.number, body: motivo,
+              });
+            };
+
+            // PR nasce em draft. O GitHub nao tem setting pra isso, entao a gente forca.
+            if (['opened', 'reopened'].includes(action) && !pr.draft) {
+              await toDraft('Todo PR comeca em **draft** por aqui. Marque como ready quando tiver reviewer.');
+              return;
+            }
+
+            const problems = [];
+            const gid = (process.env.PR_BODY || '')
+              .match(/https:\/\/app\.asana\.com\/\d+\/\d+(?:\/project\/\d+\/task)?\/(\d+)/i)?.[1];
+            if (!gid) problems.push('cole a URL da task do Asana no corpo do PR');
+            if (!pr.draft && pr.state === 'open' && pr.requested_reviewers.length === 0) {
+              problems.push('peca ao menos um reviewer antes de tirar o PR do draft');
+            }
+            if (problems.length === 0) return;
+
+            if (action === 'ready_for_review') {
+              await toDraft(`Voltei este PR para **draft**:\n${problems.map(p => `- ${p}`).join('\n')}`);
+            }
+            core.setFailed(problems.join('; '));
+
+  # ---------------------------------------------------------------------------
+  # Sync. Um job, um script, switch por evento.
+  # continue-on-error: problema no Asana nunca deve travar merge.
+  # ---------------------------------------------------------------------------
+  sync:
+    name: asana-sync
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          ASANA_PAT: ${{ secrets.ASANA_PAT }}
+          ASANA_USER_MAP: ${{ secrets.ASANA_USER_MAP }}
+          PROJECT: ${{ inputs.project-gid }}
+          S_BACKLOG: ${{ inputs.section-backlog }}
+          S_READY: ${{ inputs.section-ready-to-dev }}
+          S_BLOCKED: ${{ inputs.section-blocked }}
+          S_WIP: ${{ inputs.section-wip }}
+          S_REVIEW: ${{ inputs.section-review }}
+          S_DEVQA: ${{ inputs.section-dev-qa }}
+          REVIEWER_FIELD: ${{ inputs.reviewer-field-gid }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const gid = (process.env.PR_BODY || '')
+              .match(/https:\/\/app\.asana\.com\/\d+\/\d+(?:\/project\/\d+\/task)?\/(\d+)/i)?.[1];
+            if (!gid) return core.warning('PR sem task do Asana, nada a sincronizar.');
+
+            // --- cliente minimo da API do Asana -----------------------------
+            const api = async (method, path, data) => {
+              const res = await fetch(`https://app.asana.com/api/1.0${path}`, {
+                method,
+                headers: {
+                  Authorization: `Bearer ${process.env.ASANA_PAT}`,
+                  'Content-Type': 'application/json',
+                },
+                body: data ? JSON.stringify({ data }) : undefined,
+              });
+              if (!res.ok) throw new Error(`Asana ${method} ${path} -> ${res.status} ${await res.text()}`);
+              return (await res.json()).data;
+            };
+            const comment = (html) => api('POST', `/tasks/${gid}/stories`, { html_text: `<body>${html}</body>` });
+            const subtasks = () => api('GET', `/tasks/${gid}/subtasks?opt_fields=name,completed`);
+            const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            // Passo que pode falhar sem invalidar os outros (ex.: reviewer Guest
+            // que o Asana recusa). Vira warning no log, nao mata o job.
+            const tentar = async (oque, fn) => {
+              try { return await fn(); }
+              catch (e) { core.warning(`Falhou ao ${oque}: ${e.message}`); }
+            };
+
+            const tag = `${context.repo.repo}#${pr.number}`;
+            const link = `<a href="${pr.html_url}">${tag}</a>`;
+            const userMap = JSON.parse(process.env.ASANA_USER_MAP || '{}');
+            const action = context.payload.action;
+
+            // --- membership no board ----------------------------------------
+            // A task vive em varios projetos. So mexemos na secao DESTE board.
+            const task = await api('GET',
+              `/tasks/${gid}?opt_fields=memberships.project.gid,memberships.section.gid,memberships.section.name`);
+            const mb = task.memberships.find((m) => m.project.gid === process.env.PROJECT);
+            if (!mb) {
+              core.warning(`Task ${gid} nao esta no board Scrumban. Sincronizo comentario e subtask, mas nao movo secao.`);
+            }
+            const secaoAtual = mb?.section?.gid;
+            const moveTo = async (secao, nome) => {
+              if (!mb) return;
+              if (secaoAtual === secao) return core.info(`Task ja esta em ${nome}.`);
+              // Blocked e decisao humana. A automacao avisa e nao arrasta o card.
+              if (secaoAtual === process.env.S_BLOCKED) {
+                core.warning(`Task esta em Blocked, nao movo para ${nome}.`);
+                return comment(`${link}: o fluxo pediria ${nome}, mas o card esta em ` +
+                  `<strong>Blocked</strong>. Mova na mao quando desbloquear.`);
+              }
+              await api('POST', `/sections/${secao}/addTask`, { task: gid });
+              core.info(`Task movida para ${nome}.`);
+            };
+
+            // --- PR aberto: garante que a task saiu da fila ------------------
+            if (['opened', 'reopened'].includes(action)) {
+              if ([process.env.S_BACKLOG, process.env.S_READY].includes(secaoAtual)) {
+                await moveTo(process.env.S_WIP, 'WIP');
+              }
+              return;
+            }
+
+            // --- voltou pra draft: task volta pra WIP ------------------------
+            if (action === 'converted_to_draft') {
+              return moveTo(process.env.S_WIP, 'WIP');
+            }
+
+            // --- reviewer entrou: Review / PR + campo Reviewer + subtasks -----
+            if (!pr.draft && ['ready_for_review', 'review_requested'].includes(action)) {
+              await moveTo(process.env.S_REVIEW, 'Review / PR');
+
+              for (const r of pr.requested_reviewers.filter((r) => !userMap[r.login])) {
+                core.warning(`Sem GID do Asana para @${r.login} em ASANA_USER_MAP`);
+              }
+
+              // Reviewer pode ser Guest do workspace e nao ter acesso ao board.
+              // Nesse caso o Asana recusa o assignee. Isso vira warning, nunca
+              // aborta o resto do sync.
+              const gids = pr.requested_reviewers.map((r) => userMap[r.login]).filter(Boolean);
+              if (process.env.REVIEWER_FIELD && gids.length) {
+                await tentar('preencher campo Reviewer', () =>
+                  api('PUT', `/tasks/${gid}`, { custom_fields: { [process.env.REVIEWER_FIELD]: gids } }));
+              }
+
+              const existing = await subtasks();
+              for (const r of pr.requested_reviewers) {
+                const name = `Code review ${tag} - @${r.login}`;
+                if (existing.some((s) => s.name === name)) continue;
+                const notes = `<body>Revisar ${link}: ${esc(pr.title)}</body>`;
+                const criar = (assignee) =>
+                  api('POST', `/tasks/${gid}/subtasks`, { name, assignee, html_notes: notes });
+                await tentar(`subtask de @${r.login}`, async () => {
+                  try {
+                    await criar(userMap[r.login] ?? null);
+                  } catch (e) {
+                    if (!userMap[r.login]) throw e;
+                    core.warning(`Asana recusou @${r.login} como assignee, criando sem: ${e.message}`);
+                    await criar(null);
+                  }
+                });
+              }
+              return;
+            }
+
+            // --- review submetido: comenta na task ---------------------------
+            if (context.eventName === 'pull_request_review') {
+              const rv = context.payload.review;
+              const verbo = { approved: 'aprovou', changes_requested: 'pediu mudancas' }[rv.state] || 'comentou em';
+              const texto = (rv.body || '').slice(0, 1500);
+              return comment(`@${rv.user.login} ${verbo} ${link}` + (texto ? `<br><br>${esc(texto)}` : ''));
+            }
+
+            // --- PR fechado --------------------------------------------------
+            if (action === 'closed') {
+              for (const s of await subtasks()) {
+                if (s.name.includes(tag) && !s.completed) await api('PUT', `/tasks/${s.gid}`, { completed: true });
+              }
+
+              if (!pr.merged) {
+                await moveTo(process.env.S_WIP, 'WIP');
+                return comment(`${link} fechado sem merge. Task volta pra WIP.`);
+              }
+
+              // Outros PRs abertos citando a mesma task, em qualquer repo da org.
+              // Usa o indice de busca do GitHub, que tem lag de alguns segundos.
+              const { data } = await github.rest.search.issuesAndPullRequests({
+                q: `org:${context.repo.owner} is:pr is:open in:body ${gid}`,
+                per_page: 100,
+              });
+              const outros = data.items.filter((i) => i.number !== pr.number);
+              if (outros.length) {
+                return core.info(`Ainda aberto: ${outros.map((o) => o.html_url).join(', ')}. Nao movo pra DEV QA.`);
+              }
+
+              await moveTo(process.env.S_DEVQA, 'DEV QA');
+              await comment(`${link} mergeado, nenhum outro PR aberto. Task vai pra DEV QA.`);
+            }

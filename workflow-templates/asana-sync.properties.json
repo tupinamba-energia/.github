@@ -1,0 +1,6 @@
+{
+  "name": "Asana PR Sync",
+  "description": "Liga o ciclo de vida do PR ao card no board Scrumban · Engenharia: draft por padrao, gate de reviewer, subtask de review e movimento de secao. Requer os secrets `ASANA_PAT` e `ASANA_USER_MAP`.",
+  "iconName": "octicon sync",
+  "categories": ["Automation", "Project management"]
+}
